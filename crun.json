@@ -1,0 +1,7 @@
+{
+    "clear": true,
+    "scripts": {
+        "run": "crun main.cpp -f folder",
+        "build": "crun main.cpp -b"
+    }
+}
