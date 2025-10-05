@@ -1,159 +1,308 @@
 #define NOMINMAX
-
 #include <windows.h>
 
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
-#include <functional>
 #include <iostream>
-#include <map>
+#include <regex>
 #include <sstream>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "rapidjson/document.h"
 
-
-namespace fs = std::filesystem;
 using namespace std;
+namespace fs = filesystem;
+
+static fs::path getExecutablePath() {
+#ifdef _WIN32
+    wchar_t buffer[MAX_PATH];
+    DWORD len = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
+    if (len == 0) throw runtime_error("GetModuleFileNameW failed");
+    return fs::path(buffer).parent_path();
+#else
+    char buffer[4096];
+    ssize_t len = readlink("/proc/self/exe", buffer, sizeof(buffer) - 1);
+    if (len == -1) throw runtime_error("readlink(/proc/self/exe) failed");
+    buffer[len] = '\0';
+    return fs::path(buffer).parent_path();
+#endif
+}
 
 enum Launch { BUILD, RUN, BOTH };
+
+enum LogLevel { INFO, WARNING, FAULT, DEBUG };
 
 struct Args {
     bool clear = false;
     Launch launch = BOTH;
-    string buildFolder = "./build";
+    string buildFolder = "build";
     bool useGCC = false;
     string name;
-    vector<string> files;
-    vector<string> folders;
-    vector<string> includeDirs;
-    vector<string> libDirs;
-    vector<string> libsList;
-    string compilerOptions;
-    string exeArgs;
-    bool warnings = true;
+    vector<string> files, folders, includeDirs, libDirs, libsList;
+    string compilerOptions, exeArgs;
+    LogLevel logLevel = FAULT;
 };
 
 Args arguments;
 
-void help() { cout << "CRUN help\n"; }
-void setBuildFolder(const string& dir) {
-    if (!dir.empty()) arguments.buildFolder = dir;
-}
+static void logMessage(LogLevel level, const string& msg, const string& customEmoji = "", bool always = false) {
+    if (!always && level < arguments.logLevel) return;
 
-map<string, function<void()>> flags = {{"-c", [] { arguments.clear = true; }},
-    {"-clear", [] { arguments.clear = true; }},
-    {"-r", [] { arguments.launch = RUN; }},
-    {"-b", [] { arguments.launch = BUILD; }},
-    {"-run", [] { arguments.launch = RUN; }},
-    {"-build", [] { arguments.launch = BUILD; }},
-    {"-gcc", [] { arguments.useGCC = true; }}};
-
-map<string, function<void(const string&)>> options = {{"-bd", setBuildFolder}, {"-buildDir", setBuildFolder}};
-
-void parseArgs(int argc, char* argv[]) {
-    for (int i = 0; i < argc; ++i) {
-        string arg = argv[i];
-        if (arg == "--") {
-            for (++i; i < argc; ++i) arguments.exeArgs += string(argv[i]) + " ";
-            break;
-        }
-        if (auto it = flags.find(arg); it != flags.end())
-            it->second();
-        else if (auto it = options.find(arg); it != options.end()) {
-            if (i + 1 < argc) it->second(argv[++i]);
-        }
-        else if (arg == "-I" && i + 1 < argc)
-            arguments.includeDirs.push_back(argv[++i]);
-        else if (arg == "-L" && i + 1 < argc)
-            arguments.libDirs.push_back(argv[++i]);
-        else if (arg == "-l" && i + 1 < argc)
-            arguments.libsList.push_back(argv[++i]);
-        else if (arg == "-F" && i + 1 < argc)
-            arguments.folders.push_back(argv[++i]);
-        else if (arg == "-f" && i + 1 < argc)
-            arguments.files.push_back(argv[++i]);
-        else if (arg == "-o") {
-            for (++i; i < argc && argv[i][0] != '\\'; ++i) arguments.compilerOptions += string(argv[i]) + " ";
-            --i;
-        }
-        else {
-            fs::path p(arg);
-            if (arguments.files.empty()) {
-                arguments.name = p.stem().string();
-                arguments.buildFolder = (p.parent_path() / arguments.buildFolder).string();
-            }
-            arguments.files.push_back(arg);
-        }
+    string color, emoji;
+    switch (level) {
+    case INFO:
+        color = "\033[36m";
+        emoji = "ℹ️";
+        break;  // синий
+    case WARNING:
+        color = "\033[33m";
+        emoji = "⚠️";
+        break;  // желтый
+    case FAULT:
+        color = "\033[31m";
+        emoji = "❌";
+        break;  // красный
+    case DEBUG:
+        color = "\033[35m";
+        emoji = "🐞";
+        break;  // фиолетовый
     }
+
+    if (!customEmoji.empty()) emoji = customEmoji;
+
+    (level == FAULT ? cerr : cout) << color << emoji << ' ' << msg << "\033[0m" << endl;
 }
 
-inline void readStringArray(const rapidjson::Document& d, const char* key, vector<string>& value) {
-    if (d.HasMember(key) && d[key].IsArray())
-        for (auto& v : d[key].GetArray())
-            if (v.IsString()) value.push_back(v.GetString());
+// ------------------ Чтение конфигурации ------------------
+static int scriptCallDepth = 0;
+static const int MAX_SCRIPT_DEPTH = 5;
+
+static bool runScript(const string& script) {
+    if (++scriptCallDepth > MAX_SCRIPT_DEPTH) return true;
+#ifdef _WIN32
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    vector<char> cmd(script.begin(), script.end());
+    cmd.push_back(0);
+    if (CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+    }
+#else
+    system(script.c_str());
+#endif
+    return false;
 }
 
-inline void readString(const rapidjson::Document& d, const char* key, string& value) {
-    if (d.HasMember(key) && d[key].IsString()) value = d[key].GetString();
+static string readFile(const string& path) {
+    ifstream f(path);
+    if (!f.is_open()) return {};
+    return string((istreambuf_iterator<char>(f)), istreambuf_iterator<char>());
 }
 
-inline void readBool(const rapidjson::Document& d, const char* key, bool& value) {
-    if (d.HasMember(key) && d[key].IsBool()) value = d[key].GetBool();
+inline static bool extractString(const rapidjson::Document& d, const char* key, string& value) {
+    if (d.HasMember(key)) {
+        if (d[key].IsString()) {
+            value = d[key].GetString();
+            return true;
+        }
+        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен string");
+    }
+    return false;
+}
+
+inline static bool extractBool(const rapidjson::Document& d, const char* key, bool& value) {
+    if (d.HasMember(key)) {
+        if (d[key].IsBool()) {
+            value = d[key].GetBool();
+            return true;
+        }
+        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен bool");
+    }
+    return false;
+}
+
+inline static bool extractArray(const rapidjson::Document& d, const char* key, vector<string>& value) {
+    if (d.HasMember(key)) {
+        if (d[key].IsArray()) {
+            value.clear();
+            for (auto& v : d[key].GetArray()) {
+                if (v.IsString())
+                    value.push_back(v.GetString());
+                else
+                    logMessage(FAULT, string("Элемент массива ") + key + " не string");
+            }
+            return true;
+        }
+        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен массив[string]");
+    }
+    return false;
 }
 
 bool readConfig(const string& path, const string& script) {
-    using namespace rapidjson;
-    ifstream ifs(path);
-    if (!ifs.is_open()) return true;
-    stringstream buffer;
-    buffer << ifs.rdbuf();
-    Document d;
-    d.Parse(buffer.str().c_str());
-    if (d.HasParseError()) return true;
+    string json = readFile(path);
+    if (json.empty()) return true;
 
-    static int scriptDepth = 0;
-    if (!script.empty() && d.HasMember("scripts") && d["scripts"].IsObject() && scriptDepth < 2) {
-        ++scriptDepth;
-        for (auto& v : d["scripts"].GetObject()) {
-            if (v.name.IsString() && v.name.GetString() == script && v.value.IsString()) {
-                system(v.value.GetString());
-                exit(0);
+    rapidjson::Document doc;
+    doc.Parse(json.c_str());
+    if (doc.HasParseError()) {
+        logMessage(FAULT, "Ошибка чтения конфига!");
+        return true;
+    }
+
+    if (!script.empty() && scriptCallDepth < MAX_SCRIPT_DEPTH) {
+        regex rgx(R"("scripts"\s*:\s*\{([^}]*)\})");
+        smatch match;
+        if (regex_search(json, match, rgx)) {
+            string scriptsBlock = match[1];
+            regex pairRgx("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"");
+            for (auto it = sregex_iterator(scriptsBlock.begin(), scriptsBlock.end(), pairRgx); it != sregex_iterator(); ++it) {
+                if ((*it)[1] == script) return runScript((*it)[2]);
             }
         }
     }
 
-    auto parseStringArray = [](const Value& arr, vector<string>& target) {
-        if (arr.IsArray())
-            for (auto& v : arr.GetArray())
-                if (v.IsString()) target.push_back(v.GetString());
-    };
+    extractArray(doc, "includes", arguments.includeDirs);
+    extractArray(doc, "libs-folders", arguments.libDirs);
+    extractArray(doc, "libs", arguments.libsList);
+    extractArray(doc, "folders", arguments.folders);
+    extractArray(doc, "files", arguments.files);
 
-    readStringArray(d, "includeDirs", arguments.includeDirs);
-    readStringArray(d, "libDirs", arguments.libDirs);
-    readStringArray(d, "libsList", arguments.libsList);
-    readStringArray(d, "folders", arguments.folders);
-    readStringArray(d, "files", arguments.files);
+    extractString(doc, "name", arguments.name);
+    extractString(doc, "options", arguments.compilerOptions);
+    extractBool(doc, "clear", arguments.clear);
+    extractBool(doc, "useGCC", arguments.useGCC);
 
-    readString(d, "name", arguments.name);
-    readString(d, "compilerOptions", arguments.compilerOptions);
-    readString(d, "buildFolder", arguments.buildFolder);
-
-    readBool(d, "clear", arguments.clear);
-    readBool(d, "useGCC", arguments.useGCC);
+    if (extractString(doc, "build", arguments.buildFolder)) {
+        fs::path buildPath(arguments.buildFolder);
+        if (!fs::is_directory(buildPath) && fs::exists(buildPath)) {
+            logMessage(FAULT, "Путь для сборки должна быть папка: " + arguments.buildFolder);
+            arguments.buildFolder = "build";
+        }
+    }
 
     string launch;
-    readString(d, "launch", launch);
-    if (launch == "run")
-        arguments.launch = RUN;
-    else if (launch == "build")
-        arguments.launch = BUILD;
+    if (extractString(doc, "launch", launch)) {
+        if (launch == "run")
+            arguments.launch = RUN;
+        else if (launch == "build")
+            arguments.launch = BUILD;
+        else {
+            logMessage(FAULT, "Неверное значение для launch, нужно 'run' или 'build'");
+            arguments.launch = BOTH;
+        }
+    }
+
+    string logLevel;
+    if (extractString(doc, "log-level", logLevel)) {
+        if (logLevel == "info")
+            arguments.logLevel = INFO;
+        else if (logLevel == "warn")
+            arguments.logLevel = WARNING;
+        else if (logLevel == "error")
+            arguments.logLevel = FAULT;
+        else if (logLevel == "debug")
+            arguments.logLevel = DEBUG;
+        else {
+            logMessage(FAULT, "Неверное значение для launch, нужно 'info', 'warn', 'error' или 'debug'");
+            arguments.logLevel = WARNING;
+        }
+    }
 
     return false;
 }
 
+// ------------------ Аргументы ------------------
+
+void parseArgs(int argc, char* argv[]) {
+    static auto readUntilBackslash = [&](int& i, string& s) {
+        s.clear();
+        while (++i < argc && argv[i][0] != '\\') {
+            if (!s.empty()) s += " ";
+            s += argv[i];
+        }
+    };
+
+    static auto pushNextArg = [&](int& i, vector<string>& v) {
+        if (i + 1 < argc) v.push_back(argv[++i]);
+    };
+
+    static auto setNextArg = [&](int& i, string& s) {
+        if (i + 1 < argc) s = argv[++i];
+    };
+
+    for (int i = 0; i < argc; ++i) {
+        const string& arg = argv[i];
+
+        if (arg == "-o")
+            readUntilBackslash(i, arguments.compilerOptions);
+        else if (arg == "--")
+            readUntilBackslash(i, arguments.exeArgs);
+        else if (arg == "-c" || arg == "-clear")
+            arguments.clear = true;
+        else if (arg == "-r" || arg == "-run")
+            arguments.launch = RUN;
+        else if (arg == "-b" || arg == "-build")
+            arguments.launch = BUILD;
+        else if (arg == "-gcc")
+            arguments.useGCC = true;
+        else if (arg == "-g++")
+            arguments.useGCC = false;
+        else if (arg == "-bd" || arg == "-buildDir")
+            setNextArg(i, arguments.buildFolder);
+        else if (arg == "-I")
+            pushNextArg(i, arguments.includeDirs);
+        else if (arg == "-L")
+            pushNextArg(i, arguments.libDirs);
+        else if (arg == "-l")
+            pushNextArg(i, arguments.libsList);
+        else if (arg == "-F")
+            pushNextArg(i, arguments.folders);
+        else if (arg == "-f")
+            pushNextArg(i, arguments.files);
+        else if (arg == "-info")
+            arguments.logLevel = INFO;
+        else if (arg == "-warn")
+            arguments.logLevel = WARNING;
+        else if (arg == "-error")
+            arguments.logLevel = FAULT;
+        else if (arg == "-debug")
+            arguments.logLevel = DEBUG;
+        else {
+            // bug: clear стирает все эти сообщения
+            // bug: чтобы увидеть сообщения ДО ЭТОГО должен быть -warn | -info
+            if (arg.empty())
+                logMessage(WARNING, "Имя файла не может быть пустым!");
+            else if (arg[0] == '-')
+                logMessage(WARNING, "Неверный аргумент: " + arg);
+            else {
+                fs::path p(arg);
+                if (!fs::exists(p))
+                    logMessage(WARNING, "Файл не найден: " + arg);
+                else
+                    arguments.files.push_back(arg);
+            }
+        }
+    }
+
+    if (arguments.name.empty()) {
+        if (arguments.files.empty()) {
+            arguments.files.push_back(arguments.useGCC ? "main.c" : "main.cpp");
+            arguments.name = "main";
+        }
+        if (arguments.name.empty() && !arguments.files.empty()) {
+            fs::path p(arguments.files[0]);
+            arguments.name = p.stem().string();
+        }
+    }
+}
+
+// ------------------ Компиляция и запуск ------------------
 void run() {
     if (arguments.clear) {
 #ifdef _WIN32
@@ -162,22 +311,25 @@ void run() {
         system("clear");
 #endif
     }
+
+    logMessage(INFO, "Папка сборки: " + arguments.buildFolder, "📂");
+
     fs::create_directories(arguments.buildFolder);
-    string outputFile = arguments.buildFolder + "/" + arguments.name + ".exe";
+    fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / (arguments.name + ".exe"));
     string compiler = arguments.useGCC ? "gcc" : "g++";
 
-    for (auto& folder : arguments.folders)
-        if (fs::exists(folder) && fs::is_directory(folder))
-            for (auto& p : fs::directory_iterator(folder))
-                if (p.is_regular_file()) {
-                    auto ext = p.path().extension().string();
-                    if (ext == ".cpp" || ext == ".c") arguments.files.push_back(p.path().string());
-                }
+    static const unordered_set<string> exts = {".cpp", ".c"};
 
-    auto joinQuoted = [](const vector<string>& v, const string& prefix = "", const string& suffix = "") {
-        string s;
-        for (auto& x : v) s += " " + prefix + "\"" + x + "\"" + suffix;
-        return s;
+    for (auto& folder : arguments.folders) {
+        if (!fs::exists(folder)) continue;
+        for (auto& p : fs::directory_iterator(folder))
+            if (p.is_regular_file() && exts.count(p.path().extension().string())) arguments.files.push_back(p.path().string());
+    }
+
+    auto joinQuoted = [](const vector<string>& v, const string& pre = "", const string& post = "") -> string {
+        ostringstream oss;
+        for (auto& x : v) oss << ' ' << pre << '"' << x << '"' << post;
+        return oss.str();
     };
 
     string filesStr = joinQuoted(arguments.files);
@@ -186,29 +338,34 @@ void run() {
     string libsStr;
     for (auto& lib : arguments.libsList) libsStr += " -l" + lib;
 
-    if (arguments.launch == RUN) {
-        if (!fs::exists(outputFile)) {
-            cerr << "❌ exe не найден: " << outputFile << endl;
+    if (arguments.launch != RUN) {
+        ostringstream ss;
+        ss << compiler << filesStr << libDirStr << includeStr << libsStr << " " << arguments.compilerOptions << " -o \"" << outputPath.string() << "\" -finput-charset=UTF-8";
+        logMessage(INFO, "Начало " + compiler + " сборки " + arguments.name, "⚒️", true);
+        if (system(ss.str().c_str()) != 0) {
+            logMessage(FAULT, "Ошибка при компиляции!", "❌", true);
             return;
         }
-        string runCmd = "\"" + fs::absolute(outputFile).string() + "\" " + arguments.exeArgs;
-        system(runCmd.c_str());
-        return;
-    }
-
-    stringstream ss;
-    ss << compiler << " " << filesStr << libDirStr << includeStr << libsStr << " " << arguments.compilerOptions << " -o \"" << outputFile << "\" -finput-charset=UTF-8";
-    if (system(ss.str().c_str()) != 0) {
-        cerr << "❌ Ошибка при компиляции\n";
-        return;
+        logMessage(INFO, "Сборка завершена", "✅", true);
     }
 
     if (arguments.launch != BUILD) {
-        string runCmd = "\"" + fs::absolute(outputFile).string() + "\" " + arguments.exeArgs;
-        system(runCmd.c_str());
+        if (!fs::exists(outputPath)) {
+            logMessage(FAULT, "Исполняемый файл не найден!", "❓");
+            return;
+        }
+        string cmd = "\"" + outputPath.string() + "\" " + arguments.exeArgs;
+        logMessage(INFO, "Запуск программы", "➡️", true);
+        int ret;
+        if ((ret = system(cmd.c_str())) != 0) {
+            logMessage(FAULT, "Завершена с ошибкой (код: " + to_string(ret) + ")", "❌", true);
+            return;
+        }
+        logMessage(INFO, "Успешное завершение", "⏹️", true);
     }
 }
 
+// ------------------ MAIN ------------------
 int main(int argc, char* argv[]) {
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
@@ -223,22 +380,48 @@ int main(int argc, char* argv[]) {
             script = argv[2];
         }
         else if (command == "i" || command == "init") {
-            cout << "Init config\n";
+            logMessage(WARNING, "Пока это не работает");
             return 0;
         }
         else if (command == "v" || command == "version") {
-            cout << "CRUN: Version 0.1 Alpha\n";
+            logMessage(INFO, "CRUN 0.2 by RoVoid");
             return 0;
         }
         else if (command == "h" || command == "help") {
-            help();
+            logMessage(INFO, "CRUN — компилятор и запуск C/C++ проектов", "🛠️", true);
+
+            logMessage(INFO, "Команды:", "📌", true);
+            logMessage(INFO, "  run <script>      — выполнить скрипт из crun.json", " ", true);
+            logMessage(INFO, "  init              — создать шаблон crun.json", " ", true);
+            logMessage(INFO, "  version           — показать версию", " ", true);
+            logMessage(INFO, "  help              — показать эту справку", " ", true);
+
+            logMessage(INFO, "Флаги:", "🏷️", true);
+            logMessage(INFO, "  -c, -clear        — очистить консоль перед запуском", " ", true);
+            logMessage(INFO, "  -r, -run          — запуск после сборки", " ", true);
+            logMessage(INFO, "  -b, -build        — только сборка", " ", true);
+            logMessage(INFO, "  -gcc              — использовать gcc вместо g++", " ", true);
+            logMessage(INFO, "  -g++              — использовать g++", " ", true);
+            logMessage(INFO, "  -bd, -buildDir    — указать папку сборки", " ", true);
+            logMessage(INFO, "  -I <dir>          — добавить include папку", " ", true);
+            logMessage(INFO, "  -L <dir>          — добавить папку с библиотеками", " ", true);
+            logMessage(INFO, "  -l <lib>          — добавить библиотеку", " ", true);
+            logMessage(INFO, "  -F <folder>       — добавить папку с исходниками", " ", true);
+            logMessage(INFO, "  -f <file>         — добавить файл", " ", true);
+            logMessage(INFO, "  -o <options...>   — дополнительные опции компилятора", " ", true);
+            logMessage(INFO, "  -- <...>          — аргументы для исполняемого файла", " ", true);
+
             return 0;
         }
     }
-    if (readConfig("./crun.json", script)) {
-        fs::path exeDir = fs::absolute(argv[0]).parent_path();
-        readConfig((exeDir / "crun.json").string(), script);
+
+    fs::path localPath = fs::absolute("./crun.json");
+    fs::path globalPath = fs::absolute(getExecutablePath() / "crun.json");
+
+    if (readConfig(localPath.string(), script) && !fs::equivalent(localPath, globalPath)) {
+        readConfig(globalPath.string(), script);
     }
+
     parseArgs(argc - 1, argv + 1);
     run();
     return 0;

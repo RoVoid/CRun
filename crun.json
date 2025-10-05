@@ -1,7 +1,9 @@
 {
-    "clear": true,
+    "clear": false,
+    "log-level": "warn",
     "scripts": {
         "run": "crun main.cpp -f folder",
-        "build": "crun main.cpp -b"
-    }
+        "build": "crun main.cpp -b1"
+    },
+    "build": "test"
 }
