@@ -156,13 +156,14 @@ bool readConfig(const string& path, const string& script) {
     }
 
     if (!script.empty() && scriptCallDepth < MAX_SCRIPT_DEPTH) {
-        regex rgx(R"("scripts"\s*:\s*\{([^}]*)\})");
-        smatch match;
-        if (regex_search(json, match, rgx)) {
-            string scriptsBlock = match[1];
-            regex pairRgx("\"([^\"]+)\"\\s*:\\s*\"([^\"]+)\"");
-            for (auto it = sregex_iterator(scriptsBlock.begin(), scriptsBlock.end(), pairRgx); it != sregex_iterator(); ++it) {
-                if ((*it)[1] == script) return runScript((*it)[2]);
+        if (doc.HasMember("scripts") && doc["scripts"].IsObject()) {
+            const auto& scripts = doc["scripts"].GetObject();
+            auto it = scripts.FindMember(script.c_str());
+            if (it != scripts.MemberEnd() && it->value.IsString()) {
+                exit(runScript(it->value.GetString()));
+            }
+            else if (it != scripts.MemberEnd()) {
+                logMessage(FAULT, "Скрипт '" + script + "' имеет неверный тип, нужен string");
             }
         }
     }
