@@ -4,5 +4,9 @@
     "scripts": {
         "run": "crun test.cpp -r",
         "build": "crun test.cpp -b"
-    }
+    },
+    "libs-folders": [
+        "./",
+        "./"
+    ]
 }

@@ -1,0 +1,96 @@
+{
+    "title": "CRUN configuration",
+    "type": "object",
+    "properties": {
+        "name": {
+            "type": "string",
+            "description": "Имя выходного файла"
+        },
+        "build": {
+            "type": "string",
+            "description": "Папка для сборки"
+        },
+        "useGCC": {
+            "type": "boolean",
+            "description": "Использовать gcc вместо g++"
+        },
+        "clear": {
+            "type": "boolean",
+            "description": "Очищать консоль перед запуском"
+        },
+        "launch": {
+            "type": "string",
+            "enum": [
+                "run",
+                "build",
+                "both"
+            ],
+            "description": "Режим: run, build или both"
+        },
+        "log-level": {
+            "type": "string",
+            "enum": [
+                "info",
+                "warn",
+                "error",
+                "debug"
+            ],
+            "description": "Уровень логирования"
+        },
+        "options": {
+            "type": "string",
+            "description": "Дополнительные флаги компиляции"
+        },
+        "libs": {
+            "type": "array",
+            "items": {
+                "type": "string"
+            },
+            "description": "Список библиотек (-l)"
+        },
+        "includes": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "format": "uri-reference",
+                "description": "Путь к include-папке"
+            },
+            "description": "Include-папки"
+        },
+        "libs-folders": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "format": "uri-reference",
+                "description": "Папки, где искать библиотеки"
+            },
+            "description": "Папки с библиотеками"
+        },
+        "folders": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "format": "uri-reference",
+                "description": "Папки с исходниками"
+            }
+        },
+        "files": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "format": "uri-reference",
+                "description": "Файлы для сборки"
+            }
+        },
+        "scripts": {
+            "type": "object",
+            "patternProperties": {
+                "^[A-Za-z0-9_-]+$": {
+                    "type": "string"
+                }
+            },
+            "description": "Отдельные скрипты"
+        }
+    },
+    "additionalProperties": false
+}

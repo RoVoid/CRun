@@ -5,7 +5,6 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
-#include <regex>
 #include <sstream>
 #include <string>
 #include <unordered_set>
@@ -15,6 +14,10 @@
 
 using namespace std;
 namespace fs = filesystem;
+
+#define VERSION "0.2 Alpha"
+
+// fix: Код не кроссплатформенный
 
 static fs::path getExecutablePath() {
 #ifdef _WIN32
@@ -48,56 +51,60 @@ struct Args {
 
 Args arguments;
 
-static void logMessage(LogLevel level, const string& msg, const string& customEmoji = "", bool always = false) {
+static void logMessage(LogLevel level, const string& msg, bool always = false, const string& emoji = "") {
     if (!always && level < arguments.logLevel) return;
 
-    string color, emoji;
+    string color;
     switch (level) {
     case INFO:
         color = "\033[36m";
-        emoji = "ℹ️";
-        break;  // синий
+        break;  // голубой
     case WARNING:
         color = "\033[33m";
-        emoji = "⚠️";
-        break;  // желтый
+        break;  // жёлтый
     case FAULT:
         color = "\033[31m";
-        emoji = "❌";
         break;  // красный
     case DEBUG:
         color = "\033[35m";
-        emoji = "🐞";
         break;  // фиолетовый
     }
 
-    if (!customEmoji.empty()) emoji = customEmoji;
+    auto& out = (level == FAULT ? cerr : cout);
 
-    (level == FAULT ? cerr : cout) << color << emoji << ' ' << msg << "\033[0m" << endl;
+    out << color;
+    if (!emoji.empty()) out << emoji << ' ';
+    out << msg << "\033[0m" << endl;
 }
+
+static void logWithEmoji(LogLevel level, const string& msg, bool always = false, const string& customEmoji = "") {
+    string emoji;
+    if (!customEmoji.empty())
+        emoji = customEmoji;
+    else {
+        switch (level) {
+        case INFO:
+            emoji = "ℹ️";
+            break;
+        case WARNING:
+            emoji = "⚠️";
+            break;
+        case FAULT:
+            emoji = "❌";
+            break;
+        case DEBUG:
+            emoji = "🐞";
+            break;
+        }
+    }
+    logMessage(level, msg, always, emoji);
+}
+
+static bool runScript(const string&);
 
 // ------------------ Чтение конфигурации ------------------
 static int scriptCallDepth = 0;
 static const int MAX_SCRIPT_DEPTH = 5;
-
-static bool runScript(const string& script) {
-    if (++scriptCallDepth > MAX_SCRIPT_DEPTH) return true;
-#ifdef _WIN32
-    STARTUPINFOA si{};
-    si.cb = sizeof(si);
-    PROCESS_INFORMATION pi{};
-    vector<char> cmd(script.begin(), script.end());
-    cmd.push_back(0);
-    if (CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
-        WaitForSingleObject(pi.hProcess, INFINITE);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-    }
-#else
-    system(script.c_str());
-#endif
-    return false;
-}
 
 static string readFile(const string& path) {
     ifstream f(path);
@@ -111,7 +118,7 @@ inline static bool extractString(const rapidjson::Document& d, const char* key, 
             value = d[key].GetString();
             return true;
         }
-        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен string");
+        logWithEmoji(FAULT, string("Неверный тип для ") + key + ", нужен string");
     }
     return false;
 }
@@ -122,7 +129,7 @@ inline static bool extractBool(const rapidjson::Document& d, const char* key, bo
             value = d[key].GetBool();
             return true;
         }
-        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен bool");
+        logWithEmoji(FAULT, string("Неверный тип для ") + key + ", нужен bool");
     }
     return false;
 }
@@ -135,11 +142,11 @@ inline static bool extractArray(const rapidjson::Document& d, const char* key, v
                 if (v.IsString())
                     value.push_back(v.GetString());
                 else
-                    logMessage(FAULT, string("Элемент массива ") + key + " не string");
+                    logWithEmoji(FAULT, string("Элемент массива ") + key + " не string");
             }
             return true;
         }
-        logMessage(FAULT, string("Неверный тип для ") + key + ", нужен массив[string]");
+        logWithEmoji(FAULT, string("Неверный тип для ") + key + ", нужен массив[string]");
     }
     return false;
 }
@@ -151,7 +158,7 @@ bool readConfig(const string& path, const string& script) {
     rapidjson::Document doc;
     doc.Parse(json.c_str());
     if (doc.HasParseError()) {
-        logMessage(FAULT, "Ошибка чтения конфига!");
+        logWithEmoji(FAULT, "Ошибка чтения конфига!");
         return true;
     }
 
@@ -159,13 +166,14 @@ bool readConfig(const string& path, const string& script) {
         if (doc.HasMember("scripts") && doc["scripts"].IsObject()) {
             const auto& scripts = doc["scripts"].GetObject();
             auto it = scripts.FindMember(script.c_str());
-            if (it != scripts.MemberEnd() && it->value.IsString()) {
-                exit(runScript(it->value.GetString()));
-            }
+            if (it != scripts.MemberEnd() && it->value.IsString()) { exit(runScript(it->value.GetString())); }
             else if (it != scripts.MemberEnd()) {
-                logMessage(FAULT, "Скрипт '" + script + "' имеет неверный тип, нужен string");
+                logWithEmoji(FAULT, "Скрипт '" + script + "' имеет неверный тип, нужен string");
+                exit(2);
             }
         }
+        logWithEmoji(FAULT, "Скрипт '" + script + "' не найден!");
+        exit(3);
     }
 
     extractArray(doc, "includes", arguments.includeDirs);
@@ -182,7 +190,7 @@ bool readConfig(const string& path, const string& script) {
     if (extractString(doc, "build", arguments.buildFolder)) {
         fs::path buildPath(arguments.buildFolder);
         if (!fs::is_directory(buildPath) && fs::exists(buildPath)) {
-            logMessage(FAULT, "Путь для сборки должна быть папка: " + arguments.buildFolder);
+            logWithEmoji(FAULT, "Путь для сборки должна быть папка: " + arguments.buildFolder);
             arguments.buildFolder = "build";
         }
     }
@@ -194,7 +202,7 @@ bool readConfig(const string& path, const string& script) {
         else if (launch == "build")
             arguments.launch = BUILD;
         else {
-            logMessage(FAULT, "Неверное значение для launch, нужно 'run' или 'build'");
+            logWithEmoji(FAULT, "Неверное значение для launch, нужно 'run' или 'build'");
             arguments.launch = BOTH;
         }
     }
@@ -210,7 +218,7 @@ bool readConfig(const string& path, const string& script) {
         else if (logLevel == "debug")
             arguments.logLevel = DEBUG;
         else {
-            logMessage(FAULT, "Неверное значение для launch, нужно 'info', 'warn', 'error' или 'debug'");
+            logWithEmoji(FAULT, "Неверное значение для launch, нужно 'info', 'warn', 'error' или 'debug'");
             arguments.logLevel = WARNING;
         }
     }
@@ -219,7 +227,6 @@ bool readConfig(const string& path, const string& script) {
 }
 
 // ------------------ Аргументы ------------------
-
 void parseArgs(int argc, char* argv[]) {
     static auto readUntilBackslash = [&](int& i, string& s) {
         s.clear();
@@ -240,6 +247,8 @@ void parseArgs(int argc, char* argv[]) {
     for (int i = 0; i < argc; ++i) {
         const string& arg = argv[i];
 
+        // fix: Нельзя задать name
+        // fix: Нет возможности отрицать
         if (arg == "-o")
             readUntilBackslash(i, arguments.compilerOptions);
         else if (arg == "--")
@@ -275,16 +284,15 @@ void parseArgs(int argc, char* argv[]) {
         else if (arg == "-debug")
             arguments.logLevel = DEBUG;
         else {
-            // bug: clear стирает все эти сообщения
             // bug: чтобы увидеть сообщения ДО ЭТОГО должен быть -warn | -info
             if (arg.empty())
-                logMessage(WARNING, "Имя файла не может быть пустым!");
+                logWithEmoji(WARNING, "Имя файла не может быть пустым!");
             else if (arg[0] == '-')
-                logMessage(WARNING, "Неверный аргумент: " + arg);
+                logWithEmoji(WARNING, "Неверный аргумент: " + arg);
             else {
                 fs::path p(arg);
                 if (!fs::exists(p))
-                    logMessage(WARNING, "Файл не найден: " + arg);
+                    logWithEmoji(WARNING, "Файл не найден: " + arg);
                 else
                     arguments.files.push_back(arg);
             }
@@ -304,16 +312,33 @@ void parseArgs(int argc, char* argv[]) {
 }
 
 // ------------------ Компиляция и запуск ------------------
-void run() {
-    if (arguments.clear) {
+static bool runScript(const string& script) {
+    if (++scriptCallDepth > MAX_SCRIPT_DEPTH) return true;
 #ifdef _WIN32
-        system("cls");
-#else
-        system("clear");
-#endif
+    STARTUPINFOA si{};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi{};
+    vector<char> cmd(script.begin(), script.end());
+    cmd.push_back(0);
+    if (CreateProcessA(NULL, cmd.data(), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
     }
+#else
+    system(script.c_str());
+#endif
+    return false;
+}
 
-    logMessage(INFO, "Папка сборки: " + arguments.buildFolder, "📂");
+// note: Нужно больше информации о выполнении
+// fix: Следует изменить сообщения
+void run() {
+    logWithEmoji(INFO, "Папка сборки: " + arguments.buildFolder, false, "📂");
+    if (!arguments.files.empty()) {
+        logWithEmoji(INFO, "Файлы сборки: ", false, "📚");
+        for (auto file : arguments.files) { logMessage(INFO, "   * " + file); }
+    }
 
     fs::create_directories(arguments.buildFolder);
     fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / (arguments.name + ".exe"));
@@ -324,7 +349,8 @@ void run() {
     for (auto& folder : arguments.folders) {
         if (!fs::exists(folder)) continue;
         for (auto& p : fs::directory_iterator(folder))
-            if (p.is_regular_file() && exts.count(p.path().extension().string())) arguments.files.push_back(p.path().string());
+            if (p.is_regular_file() && exts.count(p.path().extension().string()))
+                arguments.files.push_back(p.path().string());
     }
 
     auto joinQuoted = [](const vector<string>& v, const string& pre = "", const string& post = "") -> string {
@@ -341,33 +367,44 @@ void run() {
 
     if (arguments.launch != RUN) {
         ostringstream ss;
-        ss << compiler << filesStr << libDirStr << includeStr << libsStr << " " << arguments.compilerOptions << " -o \"" << outputPath.string() << "\" -finput-charset=UTF-8";
-        logMessage(INFO, "Начало " + compiler + " сборки " + arguments.name, "⚒️", true);
+        ss << compiler << filesStr << libDirStr << includeStr << libsStr << " " << arguments.compilerOptions << " -o \""
+           << outputPath.string() << "\" -finput-charset=UTF-8";
+        logWithEmoji(INFO, "Начало " + compiler + " сборки " + arguments.name, true, "⚒️");
         if (system(ss.str().c_str()) != 0) {
-            logMessage(FAULT, "Ошибка при компиляции!", "❌", true);
+            logWithEmoji(FAULT, "Ошибка при компиляции!", true);
             return;
         }
-        logMessage(INFO, "Сборка завершена", "✅", true);
+        logWithEmoji(INFO, "Сборка завершена", true, "✅");
     }
 
     if (arguments.launch != BUILD) {
         if (!fs::exists(outputPath)) {
-            logMessage(FAULT, "Исполняемый файл не найден!", "❓");
+            logWithEmoji(FAULT, "Исполняемый файл не найден!", "❓");
             return;
         }
         string cmd = "\"" + outputPath.string() + "\" " + arguments.exeArgs;
-        logMessage(INFO, "Запуск программы", "➡️", true);
+        logWithEmoji(INFO, "Запуск программы", true, "➡️");
         int ret;
         if ((ret = system(cmd.c_str())) != 0) {
-            logMessage(FAULT, "Завершена с ошибкой (код: " + to_string(ret) + ")", "❌", true);
+            logWithEmoji(FAULT, "Завершена с ошибкой (код: " + to_string(ret) + ")", true);
             return;
         }
-        logMessage(INFO, "Успешное завершение", "⏹️", true);
+        logWithEmoji(INFO, "Успешное завершение", true, "⏹️");
     }
 }
 
 // ------------------ MAIN ------------------
+void enableANSIColors() {
+    HANDLE hOut = GetStdHandle(STD_OUTPUT_HANDLE);
+    if (hOut == INVALID_HANDLE_VALUE) return;
+    DWORD mode = 0;
+    if (!GetConsoleMode(hOut, &mode)) return;
+    mode |= ENABLE_VIRTUAL_TERMINAL_PROCESSING;
+    SetConsoleMode(hOut, mode);
+}
+
 int main(int argc, char* argv[]) {
+    enableANSIColors();
     SetConsoleOutputCP(CP_UTF8);
     SetConsoleCP(CP_UTF8);
     string script;
@@ -375,42 +412,42 @@ int main(int argc, char* argv[]) {
         string command = argv[1];
         if (command == "r" || command == "run") {
             if (argc == 2) {
-                cerr << "Need script name\n";
+                logWithEmoji(FAULT, "Нужно имя скрипта");
                 return 1;
             }
             script = argv[2];
         }
         else if (command == "i" || command == "init") {
-            logMessage(WARNING, "Пока это не работает");
+            logWithEmoji(WARNING, "Пока это не работает");
             return 0;
         }
         else if (command == "v" || command == "version") {
-            logMessage(INFO, "CRUN 0.2 by RoVoid");
+            logWithEmoji(INFO, string("CRUN ") + VERSION, true);
             return 0;
         }
         else if (command == "h" || command == "help") {
-            logMessage(INFO, "CRUN — компилятор и запуск C/C++ проектов", "🛠️", true);
+            logWithEmoji(INFO, "CRUN — компилятор и запуск C/C++ проектов", true, "🛠️");
 
-            logMessage(INFO, "Команды:", "📌", true);
-            logMessage(INFO, "  run <script>      — выполнить скрипт из crun.json", " ", true);
-            logMessage(INFO, "  init              — создать шаблон crun.json", " ", true);
-            logMessage(INFO, "  version           — показать версию", " ", true);
-            logMessage(INFO, "  help              — показать эту справку", " ", true);
+            logWithEmoji(INFO, "Команды:", true, "📌");
+            logMessage(INFO, "    run <script>      — выполнить скрипт из crun.json", true);
+            logMessage(INFO, "    init              — создать шаблон crun.json", true);
+            logMessage(INFO, "    version           — показать версию", true);
+            logMessage(INFO, "    help              — показать эту справку", true);
 
-            logMessage(INFO, "Флаги:", "🏷️", true);
-            logMessage(INFO, "  -c, -clear        — очистить консоль перед запуском", " ", true);
-            logMessage(INFO, "  -r, -run          — запуск после сборки", " ", true);
-            logMessage(INFO, "  -b, -build        — только сборка", " ", true);
-            logMessage(INFO, "  -gcc              — использовать gcc вместо g++", " ", true);
-            logMessage(INFO, "  -g++              — использовать g++", " ", true);
-            logMessage(INFO, "  -bd, -buildDir    — указать папку сборки", " ", true);
-            logMessage(INFO, "  -I <dir>          — добавить include папку", " ", true);
-            logMessage(INFO, "  -L <dir>          — добавить папку с библиотеками", " ", true);
-            logMessage(INFO, "  -l <lib>          — добавить библиотеку", " ", true);
-            logMessage(INFO, "  -F <folder>       — добавить папку с исходниками", " ", true);
-            logMessage(INFO, "  -f <file>         — добавить файл", " ", true);
-            logMessage(INFO, "  -o <options...>   — дополнительные опции компилятора", " ", true);
-            logMessage(INFO, "  -- <...>          — аргументы для исполняемого файла", " ", true);
+            logWithEmoji(INFO, "Флаги:", true, "🏷️");
+            logMessage(INFO, "    -c, -clear        — очистить консоль перед запуском", true);
+            logMessage(INFO, "    -r, -run          — запуск после сборки", true);
+            logMessage(INFO, "    -b, -build        — только сборка", true);
+            logMessage(INFO, "    -gcc              — использовать gcc вместо g++", true);
+            logMessage(INFO, "    -g++              — использовать g++", true);
+            logMessage(INFO, "    -bd, -buildDir    — указать папку сборки", true);
+            logMessage(INFO, "    -I <dir>          — добавить include папку", true);
+            logMessage(INFO, "    -L <dir>          — добавить папку с библиотеками", true);
+            logMessage(INFO, "    -l <lib>          — добавить библиотеку", true);
+            logMessage(INFO, "    -F <folder>       — добавить папку с исходниками", true);
+            logMessage(INFO, "    -f <file>         — добавить файл", true);
+            logMessage(INFO, "    -o <options...>   — дополнительные опции компилятора", true);
+            logMessage(INFO, "    -- <...>          — аргументы для исполняемого файла", true);
 
             return 0;
         }
@@ -424,6 +461,15 @@ int main(int argc, char* argv[]) {
     }
 
     parseArgs(argc - 1, argv + 1);
+
+    if (arguments.clear) {
+#ifdef _WIN32
+        system("cls");
+#else
+        system("clear");
+#endif
+    }
+
     run();
     return 0;
 }
