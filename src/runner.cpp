@@ -1,9 +1,8 @@
 #include "../runner.hpp"
 
-#include <windows.h>
-
 #include <chrono>
 #include <filesystem>
+#include <sstream>
 
 #include "../args.hpp"
 #include "../logger.hpp"
@@ -14,23 +13,57 @@ extern Args arguments;
 
 using std::string;
 
+#ifdef _WIN32
+#include <windows.h>
+#else
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 int runScript(const string& cmd, bool monitoring) {
+    MonitoringResult result{};
+    auto start = std::chrono::steady_clock::now();
+    int code = -1;
+
+#ifdef _WIN32
     STARTUPINFOA si{};
     si.cb = sizeof(si);
     PROCESS_INFORMATION pi{};
-    DWORD code = -1;
 
-    MonitoringResult result;
-
-    auto start = std::chrono::steady_clock::now();
     if (CreateProcessA(NULL, const_cast<char*>(cmd.c_str()), NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
         if (monitoring) monitorProcess(pi.dwProcessId, result);
 
         WaitForSingleObject(pi.hProcess, INFINITE);
-        GetExitCodeProcess(pi.hProcess, &code);
+        GetExitCodeProcess(pi.hProcess, (LPDWORD)&code);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
     }
+    else {
+        logMessage(FAULT, "Не удалось запустить процесс: " + cmd);
+        return -1;
+    }
+
+#else  // Linux / macOS
+    pid_t pid = fork();
+    if (pid == 0) {
+        execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)nullptr);
+        _exit(127);  // если exec не сработал
+    }
+    else if (pid > 0) {
+        if (monitoring) monitorProcess(pid, result);
+        int status = 0;
+        waitpid(pid, &status, 0);
+        if (WIFEXITED(status))
+            code = WEXITSTATUS(status);
+        else
+            code = -1;
+    }
+    else {
+        logMessage(FAULT, "Не удалось запустить процесс: " + cmd);
+        return -1;
+    }
+#endif
+
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
 
@@ -43,7 +76,7 @@ int runScript(const string& cmd, bool monitoring) {
         logMessageA(INFO, "    RAM average: " + std::to_string(result.ramAverage) + " MB", true);
     }
 
-    return static_cast<int>(code);
+    return code;
 }
 
 void run() {
@@ -54,7 +87,13 @@ void run() {
     }
 
     fs::create_directories(arguments.buildFolder);
+
+#ifdef _WIN32
     fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / (arguments.name + ".exe"));
+#else
+    fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / arguments.name);
+#endif
+
     string compiler = arguments.useGCC ? "gcc" : "g++";
 
     auto joinQuoted = [](const std::vector<string>& v, const string& pre = "") -> string {
@@ -86,9 +125,11 @@ void run() {
             logMessage(FAULT, "Исполняемый файл не найден!", true, "❓");
             return;
         }
+
         string cmd = "\"" + outputPath.string() + "\" " + arguments.exeArgs;
         logMessage(INFO, "Запуск программы", true, "➡️");
         int ret = runScript(cmd, true);
+
         if (ret != 0)
             logMessage(FAULT, "Завершена с ошибкой (" + std::to_string(ret) + ")");
         else
