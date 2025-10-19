@@ -101,12 +101,20 @@ void run() {
     }
 
     logMessage(INFO, "Папка сборки: " + arguments.buildFolder, false, "📂");
+    fs::create_directories(arguments.buildFolder);
+
+    static const std::set<string> exts = {".cpp", ".c"};
+    for (auto& f : arguments.folders) {
+        if (!fs::exists(f)) continue;
+        for (auto& p : fs::directory_iterator(f))
+            if (p.is_regular_file() && exts.count(p.path().extension().string()))
+                arguments.files.insert(p.path().string());
+    }
+
     if (!arguments.files.empty()) {
         logMessage(INFO, "Файлы сборки: ", false, "📚");
         for (auto& file : arguments.files) logMessageA(INFO, "   * " + file);
     }
-
-    fs::create_directories(arguments.buildFolder);
 
 #ifdef _WIN32
     fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / (arguments.name + ".exe"));
