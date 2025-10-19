@@ -10,6 +10,8 @@ using std::string;
 #ifdef _WIN32
 #include <windows.h>
 
+#include <iostream>
+
 void setupConsoleUTF8() {
     // Устанавливаем кодировку консоли в UTF-8
     SetConsoleOutputCP(CP_UTF8);
@@ -23,42 +25,34 @@ void setupConsoleUTF8() {
         SetConsoleMode(hOut, mode);
     }
 
-    // Разрешаем вывод Unicode через cout
+    // Разрешаем вывод Unicode через cout, без вызова проблемной локали
     std::ios::sync_with_stdio(false);
-    std::locale::global(std::locale(""));  // устанавливаем системную локаль
 }
 #else
+#include <locale>
 void setupConsoleUTF8() {
     std::ios::sync_with_stdio(false);
-    std::locale::global(std::locale(""));
+    std::locale::global(std::locale("en_US.UTF-8"));
 }
 #endif
 
 // private
 static string getColor(const LogLevel& level) {
     switch (level) {
-    case INFO:
-        return "\033[36m";  // голубой
-    case WARN:
-        return "\033[33m";  // жёлтый
-    case FAULT:
-        return "\033[31m";  // красный
-    default:
-        return "\033[0m";  // сброс цвета
+    case INFO: return "\033[36m";   // голубой
+    case WARN: return "\033[33m";   // жёлтый
+    case FAULT: return "\033[31m";  // красный
+    default: return "\033[0m";      // сброс цвета
     }
 }
 
 // private
 static string getPrefix(const LogLevel& level) {
     switch (level) {
-    case INFO:
-        return "ℹ️";
-    case WARN:
-        return "⚠️";
-    case FAULT:
-        return "❌";
-    default:
-        return "";
+    case INFO: return "ℹ️";
+    case WARN: return "⚠️";
+    case FAULT: return "❌";
+    default: return "";
     }
 }
 

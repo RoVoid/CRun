@@ -35,6 +35,8 @@ fs::path getExecutablePath() {
 int main(int argc, char* argv[]) {
     std::string script;
 
+    setupConsoleUTF8();
+
     if (argc >= 2) {
         std::string command = argv[1];
         if (command == "r" || command == "run") {
@@ -52,35 +54,38 @@ int main(int argc, char* argv[]) {
             logMessage(INFO, "CRUN — компилятор и запуск C/C++ проектов", true, "🛠️");
 
             logMessage(INFO, "Команды:", true, "📌");
-            logMessageA(INFO, "    run <script>         — выполнить скрипт из crun.json", true);
-            logMessageA(INFO, "    init                 — создать шаблон crun.json", true);
+            logMessageA(INFO, "    run <script>         — выполнить из crun.yaml", true);
+            logMessageA(INFO, "    init                 — создать шаблон crun.yaml", true);
             logMessageA(INFO, "    version              — показать версию", true);
             logMessageA(INFO, "    help                 — показать эту справку", true);
-            logMessageA(INFO, "    <files...> <options> — показать эту справку", true);
+            logMessageA(INFO, "    <...>                — выполнение", true);
 
             logMessage(INFO, "Флаги:", true, "🏷️");
             logMessageA(INFO, "    -c, -clear        — очистить консоль перед запуском", true);
             logMessageA(INFO, "    -r, -run          — запуск после сборки", true);
             logMessageA(INFO, "    -b, -build        — только сборка", true);
+            logMessageA(INFO, "    -n                — установить имя", true);
             logMessageA(INFO, "    -gcc              — использовать gcc вместо g++", true);
             logMessageA(INFO, "    -g++              — использовать g++", true);
             logMessageA(INFO, "    -bd, -buildDir    — указать папку сборки", true);
-            logMessageA(INFO, "    -I <dir>          — добавить include папку", true);
-            logMessageA(INFO, "    -L <dir>          — добавить папку с библиотеками", true);
+            logMessageA(INFO, "    -i <dir>          — добавить include папку (.h | .hpp)", true);
+            logMessageA(INFO, "    -l <dir>          — добавить папку с библиотеками", true);
             logMessageA(INFO, "    -l <lib>          — добавить библиотеку", true);
-            logMessageA(INFO, "    -F <folder>       — добавить папку с исходниками", true);  // убрать
-            logMessageA(INFO, "    -f <file>         — добавить файл", true);                 // убрать
             logMessageA(INFO, "    -o <options...>   — дополнительные опции компилятора", true);
             logMessageA(INFO, "    -- <...>          — аргументы для исполняемого файла", true);
             return 0;
         }
     }
 
-    fs::path localPath = fs::absolute("./.crun/config.json");
-
-    if (readConfig(localPath.string(), script)) {
-        fs::path globalPath = fs::absolute(getExecutablePath() / ".crun/config.json");
-        if (!fs::equivalent(localPath, globalPath)) readConfig(globalPath.string(), script);
+    fs::path localYml = fs::absolute("./.crun/config.yml");
+    fs::path localYaml = fs::absolute("./.crun/config.yaml");
+    fs::path globalYml = fs::absolute(getExecutablePath() / ".crun/config.yml");
+    fs::path globalYaml = fs::absolute(getExecutablePath() / ".crun/config.yaml");
+    for (auto& path : {localYml, localYaml, globalYml, globalYaml}) {
+        if (fs::exists(path) && !readConfig(path.string(), script)) {
+            logMessage(INFO, "Найден конфиг: " + path.string());
+            break;
+        }
     }
 
     if (!arguments.scriptToRun.empty()) { return runScript(arguments.scriptToRun); }

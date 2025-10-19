@@ -1,0 +1,5 @@
+clear: false
+log-level: info
+
+scripts:
+    build: crun main.cpp -b -I "D:/System Files/Projects/C++/Libraries/include" -F "./src"

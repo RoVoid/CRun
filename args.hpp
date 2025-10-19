@@ -1,22 +1,24 @@
 #pragma once
+#include <set>
 #include <string>
-#include <vector>
 
 #include "logger.hpp"
 
 enum Launch { BUILD, RUN, BOTH };
 enum LogLevel;
 
+using std::string;
+
 struct Args {
     bool clear = false;
     Launch launch = BOTH;
-    std::string buildFolder = "build";
-    bool useGCC = false;
-    std::string name;
-    std::vector<std::string> files, folders, includeDirs, libDirs, libsList;
-    std::string compilerOptions, exeArgs;
+    string buildFolder = "build";
+    bool downToC = false;
+    string name;
+    std::set<string> files, folders, includeDirs, libDirs, libsList;
+    string compiler, compilerOptions, exeArgs;
     LogLevel logLevel = FAULT;
-    std::string scriptToRun = "";
+    string scriptToRun = "";
 };
 
 extern Args arguments;

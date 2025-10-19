@@ -1,6 +1,7 @@
 #include "../runner.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <sstream>
 
@@ -53,10 +54,8 @@ int runScript(const string& cmd, bool monitoring) {
         if (monitoring) monitorProcess(pid, result);
         int status = 0;
         waitpid(pid, &status, 0);
-        if (WIFEXITED(status))
-            code = WEXITSTATUS(status);
-        else
-            code = -1;
+        if (WIFEXITED(status)) code = WEXITSTATUS(status);
+        else code = -1;
     }
     else {
         logMessage(FAULT, "Не удалось запустить процесс: " + cmd);
@@ -66,6 +65,8 @@ int runScript(const string& cmd, bool monitoring) {
 
     auto end = std::chrono::steady_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count();
+
+    logMessageA(INFO, "", true);
 
     if (monitoring) {
         logMessage(INFO, "Результаты мониторинга:", true);
@@ -80,6 +81,25 @@ int runScript(const string& cmd, bool monitoring) {
 }
 
 void run() {
+    if (arguments.name.empty()) {
+        if (arguments.files.empty()) {
+            arguments.files.insert(arguments.downToC ? "main.c" : "main.cpp");
+            arguments.name = "main";
+        }
+        if (arguments.name.empty() && !arguments.files.empty()) {
+            fs::path p(*arguments.files.begin());
+            arguments.name = p.stem().string();
+        }
+    }
+
+    if (arguments.clear) {
+#ifdef _WIN32
+        system("cls");
+#else
+        system("clear");
+#endif
+    }
+
     logMessage(INFO, "Папка сборки: " + arguments.buildFolder, false, "📂");
     if (!arguments.files.empty()) {
         logMessage(INFO, "Файлы сборки: ", false, "📚");
@@ -94,9 +114,9 @@ void run() {
     fs::path outputPath = fs::absolute(fs::path(arguments.buildFolder) / arguments.name);
 #endif
 
-    string compiler = arguments.useGCC ? "gcc" : "g++";
+    string compiler = arguments.downToC ? "gcc" : "g++";
 
-    auto joinQuoted = [](const std::vector<string>& v, const string& pre = "") -> string {
+    auto joinQuoted = [](const std::set<string>& v, const string& pre = "") -> string {
         std::ostringstream oss;
         for (auto& x : v) oss << ' ' << pre << '"' << x << '"';
         return oss.str();
@@ -128,11 +148,11 @@ void run() {
 
         string cmd = "\"" + outputPath.string() + "\" " + arguments.exeArgs;
         logMessage(INFO, "Запуск программы", true, "➡️");
+        logMessageA(INFO, "", true);
+
         int ret = runScript(cmd, true);
 
-        if (ret != 0)
-            logMessage(FAULT, "Завершена с ошибкой (" + std::to_string(ret) + ")");
-        else
-            logMessage(INFO, "Успешное завершение", true, "⏹️");
+        if (ret != 0) logMessage(FAULT, "Завершена с ошибкой (" + std::to_string(ret) + ")");
+        else logMessage(INFO, "Успешное завершение", true, "⏹️");
     }
 }
