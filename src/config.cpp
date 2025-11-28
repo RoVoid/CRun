@@ -25,7 +25,7 @@ bool readConfig(const std::string& path, const std::string& script) {
     // --- обработка секции scripts ---
     if (!script.empty()) {
         auto scripts = doc["scripts"];
-        if (scripts.is_sequence()) {
+        if (scripts.is_mapping()) {
             auto scr = scripts[script];
             if (scr.empty()) {
                 logMessage(FAULT, "Скрипт '" + script + "' не найден!");

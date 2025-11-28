@@ -8,7 +8,7 @@
 #include "logger.hpp"
 #include "runner.hpp"
 
-#define VERSION "0.3 Alpha"
+#define VERSION "0.3.1 Alpha"
 
 namespace fs = std::filesystem;
 
